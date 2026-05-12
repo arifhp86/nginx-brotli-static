@@ -32,6 +32,37 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Resolve Docker Hub image (user/repo)
+        id: image
+        run: |
+          set -euo pipefail
+          if [ -n "${IMAGE_VAR:-}" ]; then
+            img="${IMAGE_VAR#docker.io/}"
+          else
+            if [ -z "${DOCKERHUB_USERNAME:-}" ]; then
+              echo "::error::Set repository variable DOCKERHUB_IMAGE (e.g. myuser/nginx-brotli-static), or set secret DOCKERHUB_USERNAME for default myuser/<this-repo-name>."
+              exit 1
+            fi
+            repo=$(echo "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
+            img="${DOCKERHUB_USERNAME}/${repo}"
+          fi
+          case "${img}" in
+            *:*)
+              echo "::error::Image name must not include a tag (use DOCKERHUB_IMAGE=user/repo only). Got: ${img}"
+              exit 1
+              ;;
+            */*) ;;
+            *)
+              echo "::error::Invalid image name '${img}'. Expected user/repo."
+              exit 1
+              ;;
+          esac
+          echo "value=${img}" >> "${GITHUB_OUTPUT}"
+        env:
+          IMAGE_VAR: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
       - name: Compute image tag
         id: tag
         run: |
@@ -49,6 +80,6 @@ jobs:
           file: ${{ inputs.dockerfile || '1.28.0-trixie.dockerfile' }}
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ vars.DOCKERHUB_IMAGE }}:${{ steps.tag.outputs.value }}
+          tags: ${{ steps.image.outputs.value }}:${{ steps.tag.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
