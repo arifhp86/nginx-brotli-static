@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Tag on Docker Hub (e.g. 1.28.0-trixie)"
-        default: "1.28.0-trixie"
+        description: "Tag on Docker Hub (e.g. 1.30.7-trixie)"
+        default: "1.30.7-trixie"
         type: string
       dockerfile:
-        description: "Dockerfile path in the repo"
-        default: "1.28.0-trixie.dockerfile"
+        description: "Dockerfile path in the repo (empty = <image_tag>.dockerfile)"
+        default: ""
         type: string
   push:
     tags:
@@ -63,21 +63,43 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           GITHUB_REPOSITORY: ${{ github.repository }}
 
-      - name: Compute image tag
+      # The Dockerfile always follows the tag (<tag>.dockerfile), so pushing git tag
+      # 1.30.7-trixie builds 1.30.7-trixie.dockerfile. A missing file fails the run
+      # instead of silently publishing a different nginx version under the new tag.
+      - name: Compute image tag and Dockerfile
         id: tag
         run: |
+          set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "value=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+            tag="${GITHUB_REF_NAME}"
+            file="${tag}.dockerfile"
           else
-            echo "value=${IMAGE_TAG_INPUT}" >> "${GITHUB_OUTPUT}"
+            tag="${IMAGE_TAG_INPUT}"
+            file="${DOCKERFILE_INPUT:-${tag}.dockerfile}"
           fi
+          if [ ! -f "${file}" ]; then
+            echo "::error::Dockerfile '${file}' not found for image tag '${tag}'."
+            exit 1
+          fi
+          version=$(sed -n 's/^ARG NGINX_VERSION=//p' "${file}")
+          case "${tag}" in
+            "${version}"-*) ;;
+            *)
+              echo "::error::Tag '${tag}' does not start with NGINX_VERSION '${version}' from ${file}."
+              exit 1
+              ;;
+          esac
+          echo "value=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "dockerfile=${file}" >> "${GITHUB_OUTPUT}"
+          echo "Building ${file} (nginx ${version}) as tag ${tag}"
         env:
           IMAGE_TAG_INPUT: ${{ inputs.image_tag }}
+          DOCKERFILE_INPUT: ${{ inputs.dockerfile }}
 
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ inputs.dockerfile || '1.28.0-trixie.dockerfile' }}
+          file: ${{ steps.tag.outputs.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.image.outputs.value }}:${{ steps.tag.outputs.value }}
